@@ -5764,7 +5764,7 @@ fn flatten_dataset(db: DatasetBuilder) -> Result<FlatDataset, Error> {
     // One collection indexes at most 65535 objects (u16); refuse rather than
     // write references no reader can resolve.
     if let Some(staging) = &db.vl_string_staging {
-        check_heap_object_limit(staging.patch_mask.iter().filter(|&&patch| patch).count())?;
+        check_heap_object_limit(staging.object_count)?;
     }
     #[cfg(feature = "provenance")]
     if let Some(ref prov) = db.provenance {

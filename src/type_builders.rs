@@ -739,6 +739,10 @@ pub(crate) struct VlStringStaging {
     /// `true` for each element that references a heap object and must have its
     /// address patched; `false` for a null element that must stay undefined.
     pub patch_mask: Vec<bool>,
+    /// Number of objects in `collection_bytes` (the non-null elements). Each
+    /// write pipeline checks it with [`check_heap_object_limit`] before the
+    /// staged bytes are accepted.
+    pub object_count: usize,
 }
 
 /// Stage the references and global-heap collection for a variable-length
@@ -803,6 +807,7 @@ pub(crate) fn stage_vl_elements(
         refs,
         collection_bytes,
         patch_mask,
+        object_count: objects.len(),
     }
 }
 
