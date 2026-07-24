@@ -1,4 +1,5 @@
 use hdf5_pure::{Error, File, FormatError, VlenStringReadOptions};
+use tempfile::tempdir;
 
 const FIXTURE: &str = "tests/fixtures/vl_strings.h5";
 
@@ -148,4 +149,100 @@ fn heap_object_limit_refused_for_attributes() {
         ),
         "expected GlobalHeapObjectLimitExceeded, got {error:?}"
     );
+}
+
+/// Strings one past the limit, as the shared over-limit payload for the edit
+/// session cases below.
+fn over_limit_strings() -> Vec<String> {
+    (0..=u16::MAX as usize).map(|i| format!("s{i}")).collect()
+}
+
+/// Assert a staged edit was refused with the typed limit error, whether it
+/// surfaced when staging or on commit.
+#[track_caller]
+fn assert_over_limit(result: Result<(), Error>) {
+    let error = result.expect_err("expected the over-limit write to be refused");
+    assert!(
+        matches!(
+            error,
+            Error::Format(FormatError::GlobalHeapObjectLimitExceeded { count: 65_536 })
+        ),
+        "expected GlobalHeapObjectLimitExceeded, got {error:?}"
+    );
+}
+
+/// A starter file for the edit-session cases: one small dataset, nothing
+/// variable-length.
+fn write_starter(path: &std::path::Path) {
+    let mut builder = hdf5_pure::FileBuilder::new();
+    builder.create_dataset("d").with_f64_data(&[1.0]);
+    builder.write(path).unwrap();
+}
+
+/// The edit session stages a dataset through a different pipeline than
+/// `FileBuilder` (`flatten_dataset`), so it needs its own refusal: adding an
+/// over-limit variable-length dataset to an existing file must fail on commit.
+#[test]
+fn heap_object_limit_refused_by_edit_session_dataset() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("d.h5");
+    write_starter(&path);
+
+    let values = over_limit_strings();
+    let refs: Vec<&str> = values.iter().map(String::as_str).collect();
+    let file = File::open_rw(&path).unwrap();
+    file.root()
+        .create_dataset("labels", |b| {
+            b.with_vlen_strings(&refs);
+        })
+        .unwrap();
+    assert_over_limit(file.commit());
+}
+
+/// Same pipeline, the attribute half: a variable-length attribute carried on a
+/// dataset staged by the edit session.
+#[test]
+fn heap_object_limit_refused_by_edit_session_dataset_attr() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("da.h5");
+    write_starter(&path);
+
+    let values = over_limit_strings();
+    let file = File::open_rw(&path).unwrap();
+    file.root()
+        .create_dataset("x", |b| {
+            b.with_f64_data(&[1.0])
+                .set_attr("labels", hdf5_pure::AttrValue::VarLenAsciiArray(values));
+        })
+        .unwrap();
+    assert_over_limit(file.commit());
+}
+
+/// The in-place attribute path (`apply_group_attr_ops`) is a third pipeline,
+/// and it refuses an over-limit variable-length attribute *earlier*: a compact
+/// attribute message is capped at 65,535 serialized bytes, and 16 bytes of
+/// reference per element means that cap binds long before the heap-object one.
+/// Pinned here so the ordering is deliberate — the heap-object guard behind it
+/// only becomes load-bearing if the compact cap lifts (dense attribute storage,
+/// [#102](https://github.com/stephenberry/hdf5-pure/issues/102)).
+#[test]
+fn in_place_group_attr_refuses_over_limit_by_message_size() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("ga.h5");
+    write_starter(&path);
+
+    let values = over_limit_strings();
+    let file = File::open_rw(&path).unwrap();
+    let error = file
+        .root()
+        .set_attr("labels", hdf5_pure::AttrValue::VarLenAsciiArray(values))
+        .and_then(|()| file.commit())
+        .expect_err("expected the over-limit attribute to be refused");
+    match error {
+        Error::EditUnsupported(msg) => assert!(
+            msg.contains("too large"),
+            "expected the compact-size refusal, got {msg:?}"
+        ),
+        other => panic!("expected EditUnsupported, got {other:?}"),
+    }
 }

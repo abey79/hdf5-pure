@@ -6463,6 +6463,10 @@ fn apply_group_attr_ops(region: &[u8], ops: &[AttrOp]) -> Result<(Vec<u8>, Pendi
                             "attribute is too large to encode in place",
                         ));
                     }
+                    // Defense in depth: at 16 bytes of reference per element the
+                    // compact-size cap above always fires first today, so this
+                    // only becomes load-bearing if that cap lifts (dense
+                    // attribute storage, issue #102).
                     check_heap_object_limit(strings.len())?;
                     let str_refs: Vec<&str> = strings.iter().map(String::as_str).collect();
                     pending_vl.push((msg, build_global_heap_collection(&str_refs)));

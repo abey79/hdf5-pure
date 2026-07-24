@@ -1722,3 +1722,30 @@ fn crosscheck_vlen_string_dataset() {
         "datatype must be variable-length Unicode"
     );
 }
+
+#[test]
+fn crosscheck_vlen_strings_at_heap_object_limit() {
+    // One global heap collection indexes at most 65,535 objects (the object
+    // index is a u16, 0 reserved for the free-space marker), and that is the
+    // largest variable-length dataset this crate writes. Pin the boundary
+    // against the reference library, not just our own reader: a file exactly at
+    // the limit must read back whole in C, which is what makes the writer's
+    // refusal one past it correct rather than off by one.
+    use hdf5::types::VarLenUnicode;
+
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("vlen_heap_limit.h5");
+
+    let values: Vec<String> = (0..u16::MAX as usize).map(|i| format!("s{i}")).collect();
+    let refs: Vec<&str> = values.iter().map(String::as_str).collect();
+    let mut builder = FileBuilder::new();
+    builder.create_dataset("labels").with_vlen_strings(&refs);
+    builder.write(&path).unwrap();
+
+    let file = hdf5::File::open(&path).unwrap();
+    let ds = file.dataset("labels").unwrap();
+    let vals = ds.read_raw::<VarLenUnicode>().unwrap();
+    assert_eq!(vals.len(), u16::MAX as usize);
+    assert_eq!(vals[0].as_str(), "s0");
+    assert_eq!(vals[u16::MAX as usize - 1].as_str(), "s65534");
+}
